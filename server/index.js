@@ -81,24 +81,41 @@ const KNOWN_GROUPS = [
 function parseStandings(html) {
   const $ = cheerio.load(html);
   const teams = [];
-  $('table.tblContent tr, table tr').each((i, row) => {
+  $('table tr').each((i, row) => {
     const cells = $(row).find('td');
-    if (cells.length < 8) return;
+    if (cells.length < 5) return;
     const pos = parseInt($(cells[0]).text().trim());
     if (isNaN(pos)) return;
+
     const nameCell = $(cells[1]);
     const nameLink = nameCell.find('a').first();
     const name = (nameLink.length ? nameLink.text() : nameCell.text()).trim();
-    const href = nameLink.attr('href') || '';
-    const teamIdMatch = href.match(/\/(\d+)$/);
-    const teamId = teamIdMatch ? teamIdMatch[1] : null;
-    const nums = [];
-    cells.each((j, cell) => { if (j >= 2) nums.push($(cell).text().trim()); });
-    const gp = parseInt(nums[0])||0, w = parseInt(nums[1])||0;
-    const otw = parseInt(nums[2])||0, otl = parseInt(nums[3])||0;
-    const l = parseInt(nums[4])||0, gf = parseInt(nums[5])||0;
-    const ga = parseInt(nums[6])||0, pts = parseInt(nums[nums.length-1])||0;
-    if (name) teams.push({ pos, name, teamId, gp, w, otw, otl, l, gf, ga, diff: gf-ga, pts, form: [] });
+    if (!name) return;
+
+    // Samla all celltext från kolumn 2 och framåt
+    const cellTexts = [];
+    cells.each((j, cell) => { if (j >= 2) cellTexts.push($(cell).text().trim()); });
+
+    // Poäng = sista kolumnen
+    const pts = parseInt(cellTexts[cellTexts.length - 1]) || 0;
+
+    // GP = första kolumnen efter namn
+    const gp = parseInt(cellTexts[0]) || 0;
+
+    // Sök efter GF:GA-cell med format "126:31 (95)" eller "126:31"
+    let gf = 0, ga = 0;
+    for (const t of cellTexts) {
+      const m = t.match(/(\d+)\s*:\s*(\d+)/);
+      if (m) { gf = parseInt(m[1]); ga = parseInt(m[2]); break; }
+    }
+
+    // W, T/OT, L — kolumnerna 1,2,3 efter GP
+    const w   = parseInt(cellTexts[1]) || 0;
+    const otw = parseInt(cellTexts[2]) || 0; // kan vara T (ties) eller OTV
+    const otl = parseInt(cellTexts[3]) || 0;
+    const l   = parseInt(cellTexts[4]) || 0;
+
+    teams.push({ pos, name, gp, w, otw, otl, l, gf, ga, diff: gf - ga, pts, form: [] });
   });
   return teams;
 }
