@@ -8,12 +8,16 @@ const express = require('express');
 const cors    = require('cors');
 const axios   = require('axios');
 const cheerio = require('cheerio');
+const path    = require('path');
 
 const app  = express();
 const PORT = process.env.PORT || 3001;
 
 app.use(cors());
 app.use(express.json());
+
+// Servera frontend
+app.use(express.static(path.join(__dirname, '../public')));
 
 const cache = new Map();
 function cached(key, ttlMs, fn) {
@@ -183,6 +187,11 @@ app.get('/proxy', async (req, res) => {
   if (!path || !path.startsWith('/')) return res.status(400).json({ error: 'bad path' });
   try { res.type('html').send(await get(path)); }
   catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Fallback — skicka index.html för alla andra routes
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, '../public/index.html'));
 });
 
 app.listen(PORT, () => console.log(`🏒 HockeyRobban körs på port ${PORT}`));
