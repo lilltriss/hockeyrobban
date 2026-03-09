@@ -173,7 +173,7 @@ app.get('/api/search', async (req, res) => {
   if (q.length < 2) return res.json({ teams: [], leagues: [] });
   const leagues = KNOWN_GROUPS.filter(g => g.name.toLowerCase().includes(q));
   const teamResults = [];
-  await Promise.allSettled(KNOWN_GROUPS.slice(0, 20).map(async (group) => {
+  await Promise.allSettled(KNOWN_GROUPS.map(async (group) => {
     try {
       const teams = await cached(`standings:${group.id}`, TTL30, async () => {
         return parseStandings(await get(`/ScheduleAndResults/Standings/${group.id}`));
