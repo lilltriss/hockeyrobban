@@ -1,549 +1,1455 @@
-/**
- * HockeyRobban — Backend
- * Scrapar stats.swehockey.se och exponerar ett rent JSON-API.
- */
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HockeyRobban</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Bebas+Neue&display=swap');
 
-const express = require('express');
-const cors    = require('cors');
-const axios   = require('axios');
-const cheerio = require('cheerio');
-const path    = require('path');
-
-const app  = express();
-const PORT = process.env.PORT || 3001;
-
-app.use(cors());
-app.use(express.json());
-app.use(express.static(path.join(__dirname, '../public')));
-
-const cache = new Map();
-function cached(key, ttlMs, fn) {
-  const hit = cache.get(key);
-  if (hit && Date.now() - hit.ts < ttlMs) return Promise.resolve(hit.data);
-  return fn().then(data => { cache.set(key, { data, ts: Date.now() }); return data; });
+:root {
+  --bg:       #0b0f17;
+  --surface:  #111827;
+  --surface2: #1a2535;
+  --border:   #1f2f45;
+  --border2:  #263548;
+  --accent:   #2563eb;
+  --accent2:  #3b82f6;
+  --gold:     #f59e0b;
+  --red:      #ef4444;
+  --green:    #22c55e;
+  --text:     #e2e8f0;
+  --muted:    #64748b;
+  --muted2:   #94a3b8;
 }
 
-const BASE  = 'https://stats.swehockey.se';
-const HEADS = { 'User-Agent': 'Mozilla/5.0 (compatible; HockeyRobban/1.0)' };
-const TTL5  = 5  * 60 * 1000;
-const TTL30 = 30 * 60 * 1000;
-const TTL6H = 6  * 60 * 60 * 1000;
+* { margin:0; padding:0; box-sizing:border-box; }
 
-async function get(p) {
-  const { data } = await axios.get(BASE + p, { headers: HEADS, timeout: 10000 });
-  return data;
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Inter', sans-serif;
+  min-height: 100vh;
 }
 
-// ── Fallback-lista ──────────────────────────────────────────────────────────
-let KNOWN_GROUPS = [
-  { id: 18263, name: 'SHL',                           level: 1, region: 'Nationell' },
-  { id: 19979, name: 'HockeyAllsvenskan',              level: 2, region: 'Nationell' },
-  { id: 19978, name: 'HockeyAllsvenskan Play Out',     level: 2, region: 'Nationell' },
-  { id: 18264, name: 'Hockeyettan Norra',              level: 3, region: 'Nationell' },
-  { id: 20400, name: 'Hockeyettan Södra',              level: 3, region: 'Nationell' },
-  { id: 19817, name: 'Hockeyettan Slutspel Norra',     level: 3, region: 'Nationell' },
-  { id: 19818, name: 'Hockeyettan Slutspel Södra',     level: 3, region: 'Nationell' },
-  { id: 19874, name: 'SDHL',                           level: 1, region: 'Dam' },
-  { id: 19820, name: 'Hockeyallsvenskan Dam',           level: 2, region: 'Dam' },
-  { id: 18818, name: 'HockeyTvåan Öst',               level: 4, region: 'Region Öst' },
-  { id: 19861, name: 'HockeyTrean Öst A',             level: 5, region: 'Region Öst' },
-  { id: 20300, name: 'HockeyTrean Öst B',             level: 5, region: 'Region Öst' },
-  { id: 95410, name: 'HockeyFyran Stockholm A',        level: 6, region: 'Region Öst' },
-  { id: 95411, name: 'HockeyFyran Stockholm B',        level: 6, region: 'Region Öst' },
-  { id: 19268, name: 'HockeyFyran Stockholm A',        level: 6, region: 'Region Öst' },
-  { id: 19269, name: 'HockeyFyran Stockholm B',        level: 6, region: 'Region Öst' },
-  { id: 19270, name: 'HockeyFyran Stockholm C',        level: 6, region: 'Region Öst' },
-  { id: 20056, name: 'HockeyFyran Stockholm Topp 6',   level: 6, region: 'Region Öst' },
-  { id: 20059, name: 'HockeyFyran Stockholm Forts. A', level: 6, region: 'Region Öst' },
-  { id: 20060, name: 'HockeyFyran Stockholm Forts. B', level: 6, region: 'Region Öst' },
-  { id: 20057, name: 'HockeyFyran Stockholm Playoff',  level: 6, region: 'Region Öst' },
-  { id: 20058, name: 'Kvalserie till HockeyTrean A',   level: 6, region: 'Region Öst' },
-  { id: 20061, name: 'Kvalserie till HockeyTrean B',   level: 6, region: 'Region Öst' },
-  { id: 19223, name: 'HockeyFyran Uppland',            level: 6, region: 'Region Öst' },
-  { id: 20062, name: 'HockeyFyran Uppland Forts.',     level: 6, region: 'Region Öst' },
-  { id: 19331, name: 'Hockeyfemman Stockholm Norra',   level: 7, region: 'Region Öst' },
-  { id: 20063, name: 'Hockeyfemman Stockholm Södra',   level: 7, region: 'Region Öst' },
-  { id: 18446, name: 'Uppland',                        level: 7, region: 'Region Öst' },
-  { id: 18921, name: 'Södermanland',                   level: 7, region: 'Region Öst' },
-  { id: 19191, name: 'Gotland',                        level: 7, region: 'Region Öst' },
-  { id: 18565, name: 'HockeyTvåan Norr',              level: 4, region: 'Region Norr' },
-  { id: 18571, name: 'HockeyTrean Norr',              level: 5, region: 'Region Norr' },
-  { id: 19070, name: 'Jämtl. Härjedalen',             level: 6, region: 'Region Norr' },
-  { id: 18867, name: 'Medelpad',                      level: 6, region: 'Region Norr' },
-  { id: 18909, name: 'Norrbotten',                    level: 6, region: 'Region Norr' },
-  { id: 18762, name: 'Västerbotten',                  level: 6, region: 'Region Norr' },
-  { id: 20293, name: 'Ångermanland',                  level: 6, region: 'Region Norr' },
-  { id: 20285, name: 'HockeyTvåan Väst',              level: 4, region: 'Region Väst' },
-  { id: 20351, name: 'HockeyTrean Väst',              level: 5, region: 'Region Väst' },
-  { id: 20310, name: 'Dalarna',                       level: 6, region: 'Region Väst' },
-  { id: 19485, name: 'Gästrikland',                   level: 6, region: 'Region Väst' },
-  { id: 19098, name: 'Hälsingland',                   level: 6, region: 'Region Väst' },
-  { id: 18412, name: 'Värmland',                      level: 6, region: 'Region Väst' },
-  { id: 20144, name: 'Västmanland',                   level: 6, region: 'Region Väst' },
-  { id: 19305, name: 'Örebro',                        level: 6, region: 'Region Väst' },
-  { id: 20443, name: 'HockeyTvåan Syd',               level: 4, region: 'Region Syd' },
-  { id: 19917, name: 'HockeyTrean Syd',               level: 5, region: 'Region Syd' },
-  { id: 18911, name: 'Blekinge',                      level: 6, region: 'Region Syd' },
-  { id: 19308, name: 'Bohuslän-Dals',                 level: 6, region: 'Region Syd' },
-  { id: 19536, name: 'Göteborg',                      level: 6, region: 'Region Syd' },
-  { id: 18854, name: 'Skåne',                         level: 6, region: 'Region Syd' },
-  { id: 18984, name: 'Småland',                       level: 6, region: 'Region Syd' },
-  { id: 19371, name: 'Västergötland',                 level: 6, region: 'Region Syd' },
-  { id: 18526, name: 'Östergötland',                  level: 6, region: 'Region Syd' },
+/* ── HERO ── */
+.hero {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px 80px;
+  position: relative;
+  overflow: hidden;
+}
+
+.hero-bg {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 70% 50% at 50% 0%, rgba(37,99,235,0.18) 0%, transparent 65%),
+    radial-gradient(ellipse 40% 30% at 80% 80%, rgba(37,99,235,0.06) 0%, transparent 50%);
+  pointer-events: none;
+}
+
+/* Subtle ice lines */
+.hero-bg::after {
+  content:'';
+  position: absolute;
+  inset: 0;
+  background-image:
+    repeating-linear-gradient(0deg, transparent, transparent 79px, rgba(37,99,235,0.035) 79px, rgba(37,99,235,0.035) 80px),
+    repeating-linear-gradient(90deg, transparent, transparent 79px, rgba(37,99,235,0.035) 79px, rgba(37,99,235,0.035) 80px);
+}
+
+.hero-logo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 48px;
+  opacity: 0;
+  animation: fadeUp 0.5s 0.1s forwards;
+}
+
+.puck {
+  width: 40px; height: 40px;
+  background: radial-gradient(circle at 35% 35%, #2a2a2a, #0a0a0a);
+  border-radius: 50%;
+  border: 2px solid rgba(37,99,235,0.5);
+  box-shadow: 0 0 16px rgba(37,99,235,0.3);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px;
+}
+
+.logo-text {
+  font-family: 'Bebas Neue', sans-serif;
+  font-size: 26px;
+  letter-spacing: 3px;
+  color: var(--muted2);
+}
+
+.hero-headline {
+  font-family: 'Bebas Neue', sans-serif;
+  font-size: clamp(52px, 10vw, 96px);
+  letter-spacing: 2px;
+  text-align: center;
+  line-height: 0.95;
+  margin-bottom: 20px;
+  opacity: 0;
+  animation: fadeUp 0.5s 0.2s forwards;
+}
+
+.hero-headline em {
+  font-style: normal;
+  color: var(--accent2);
+}
+
+.hero-sub {
+  font-size: 16px;
+  color: var(--muted2);
+  text-align: center;
+  margin-bottom: 48px;
+  font-weight: 300;
+  opacity: 0;
+  animation: fadeUp 0.5s 0.3s forwards;
+}
+
+/* ── SEARCH BOX ── */
+.search-wrap {
+  width: 100%;
+  max-width: 640px;
+  position: relative;
+  opacity: 0;
+  animation: fadeUp 0.5s 0.4s forwards;
+}
+
+.search-outer {
+  position: relative;
+  background: var(--surface);
+  border: 1.5px solid var(--border2);
+  border-radius: 16px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  box-shadow: 0 4px 32px rgba(0,0,0,0.4);
+}
+
+.search-outer:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px rgba(37,99,235,0.15), 0 4px 32px rgba(0,0,0,0.4);
+}
+
+.search-inner {
+  display: flex;
+  align-items: center;
+  padding: 6px 8px 6px 20px;
+  gap: 12px;
+}
+
+.search-icon {
+  color: var(--muted);
+  flex-shrink: 0;
+  font-size: 18px;
+}
+
+#searchInput {
+  flex: 1;
+  background: none;
+  border: none;
+  outline: none;
+  font-family: 'Inter', sans-serif;
+  font-size: 17px;
+  font-weight: 400;
+  color: var(--text);
+  padding: 12px 0;
+  caret-color: var(--accent2);
+}
+
+#searchInput::placeholder { color: var(--muted); }
+
+.search-btn {
+  background: var(--accent);
+  border: none;
+  border-radius: 10px;
+  color: white;
+  padding: 10px 20px;
+  font-family: 'Inter', sans-serif;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.search-btn:hover { background: var(--accent2); }
+
+/* ── DROPDOWN ── */
+.dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0; right: 0;
+  background: var(--surface);
+  border: 1.5px solid var(--border2);
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 16px 48px rgba(0,0,0,0.6);
+  z-index: 100;
+  display: none;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.dropdown.open { display: block; }
+
+.dropdown::-webkit-scrollbar { width: 4px; }
+.dropdown::-webkit-scrollbar-track { background: transparent; }
+.dropdown::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
+.drop-section-header {
+  padding: 10px 16px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+}
+
+.drop-section-header:first-child { border-top: none; }
+
+.drop-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 16px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.drop-item:hover, .drop-item.focused { background: rgba(37,99,235,0.12); }
+
+.drop-icon {
+  width: 32px; height: 32px;
+  border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.di-team  { background: rgba(37,99,235,0.15); }
+.di-league{ background: rgba(245,158,11,0.12); }
+
+.drop-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.drop-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.drop-sub {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.drop-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 20px;
+  letter-spacing: 0.5px;
+  flex-shrink: 0;
+}
+
+.badge-shl      { background: rgba(37,99,235,0.2);  color: #60a5fa; }
+.badge-ha       { background: rgba(245,158,11,0.18); color: #fbbf24; }
+.badge-h1       { background: rgba(34,197,94,0.15);  color: #4ade80; }
+.badge-h2       { background: rgba(168,85,247,0.15); color: #c084fc; }
+.badge-h3       { background: rgba(236,72,153,0.15); color: #f472b6; }
+.badge-h4       { background: rgba(100,116,139,0.2); color: #94a3b8; }
+.badge-league   { background: rgba(245,158,11,0.12); color: #fbbf24; border: 1px solid rgba(245,158,11,0.25); }
+
+.drop-no-results {
+  padding: 24px 16px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+/* ── HINTS ── */
+.search-hints {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+  justify-content: center;
+  opacity: 0;
+  animation: fadeUp 0.5s 0.5s forwards;
+}
+
+.hint-chip {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid var(--border2);
+  border-radius: 20px;
+  padding: 6px 14px;
+  font-size: 12px;
+  color: var(--muted2);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.hint-chip:hover {
+  background: rgba(37,99,235,0.15);
+  border-color: rgba(37,99,235,0.4);
+  color: var(--text);
+}
+
+/* ── TEAM PAGE ── */
+#teamPage {
+  display: none;
+  min-height: 100vh;
+  padding: 0 0 80px;
+}
+
+#teamPage.visible { display: block; }
+
+.team-hero {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 24px 24px 0;
+  position: relative;
+  overflow: hidden;
+}
+
+.team-hero::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse 60% 100% at 0% 50%, var(--team-color-alpha, rgba(37,99,235,0.12)) 0%, transparent 70%);
+}
+
+.back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted2);
+  cursor: pointer;
+  margin-bottom: 20px;
+  padding: 6px 12px 6px 8px;
+  border-radius: 8px;
+  transition: background 0.15s, color 0.15s;
+  position: relative;
+  z-index: 1;
+}
+
+.back-btn:hover { background: rgba(255,255,255,0.06); color: var(--text); }
+
+.team-title-row {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  position: relative;
+  z-index: 1;
+}
+
+.team-shield {
+  width: 64px; height: 64px;
+  border-radius: 14px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 32px;
+  flex-shrink: 0;
+}
+
+.team-title-info h2 {
+  font-family: 'Bebas Neue', sans-serif;
+  font-size: 42px;
+  letter-spacing: 1px;
+  line-height: 1;
+}
+
+.team-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+
+.team-league-tag {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 10px;
+  border-radius: 12px;
+  letter-spacing: 0.5px;
+}
+
+.team-city {
+  font-size: 13px;
+  color: var(--muted2);
+}
+
+.team-tabs {
+  display: flex;
+  gap: 0;
+  margin-top: 24px;
+  position: relative;
+  z-index: 1;
+}
+
+.team-tab {
+  padding: 12px 20px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.team-tab:hover { color: var(--text); }
+.team-tab.active { color: var(--text); border-bottom-color: var(--accent2); }
+
+.content-area {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 28px 20px;
+}
+
+/* ── CARDS ── */
+.cards-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 14px;
+  margin-bottom: 28px;
+}
+
+@media(max-width:680px) { .cards-row { grid-template-columns: 1fr; } }
+
+.stat-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 18px 20px;
+}
+
+.stat-card-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.stat-card-value {
+  font-family: 'Bebas Neue', sans-serif;
+  font-size: 44px;
+  letter-spacing: 1px;
+  line-height: 1;
+  color: var(--text);
+}
+
+.stat-card-sub {
+  font-size: 12px;
+  color: var(--muted2);
+  margin-top: 4px;
+}
+
+/* ── MATCH CARDS ── */
+.section-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 12px;
+}
+
+.match-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+  margin-bottom: 14px;
+}
+
+.match-card.highlight {
+  border-color: rgba(37,99,235,0.4);
+  box-shadow: 0 0 0 1px rgba(37,99,235,0.1);
+}
+
+.match-top {
+  padding: 10px 16px;
+  background: rgba(255,255,255,0.025);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.match-top-status {
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.status-final    { color: var(--muted2); }
+.status-upcoming { color: var(--accent2); }
+.status-live     { color: var(--red); }
+
+.match-body {
+  padding: 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.match-team {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.match-team.right { align-items: flex-end; }
+
+.match-team-name {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.match-team-short {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.match-team-name.dim { color: var(--muted2); font-weight: 400; }
+
+.match-score-center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 80px;
+}
+
+.match-score {
+  font-family: 'Bebas Neue', sans-serif;
+  font-size: 36px;
+  letter-spacing: 2px;
+  line-height: 1;
+  color: var(--text);
+}
+
+.match-score.upcoming {
+  font-size: 22px;
+  color: var(--muted);
+  letter-spacing: 4px;
+}
+
+.match-time {
+  font-size: 11px;
+  color: var(--muted2);
+}
+
+.match-result-label {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 4px;
+  letter-spacing: 1px;
+}
+
+.result-w { background: rgba(34,197,94,0.15); color: var(--green); }
+.result-l { background: rgba(239,68,68,0.12); color: var(--red); }
+.result-d { background: rgba(100,116,139,0.15); color: var(--muted2); }
+
+/* ── STANDINGS TABLE ── */
+.group-heading {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 18px 0 8px 2px;
+  border-bottom: 1px solid rgba(255,255,255,0.07);
+  margin-bottom: 8px;
+}
+.group-heading:first-child { padding-top: 4px; }
+
+.standings-tbl {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.standings-tbl th {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 8px 12px;
+  text-align: right;
+  border-bottom: 1px solid var(--border);
+}
+
+.standings-tbl th:nth-child(1),
+.standings-tbl th:nth-child(2) { text-align: left; }
+
+.standings-tbl td {
+  padding: 10px 12px;
+  font-size: 13px;
+  text-align: right;
+  border-bottom: 1px solid rgba(31,47,69,0.6);
+  transition: background 0.1s;
+}
+
+.standings-tbl tr:hover td { background: rgba(37,99,235,0.07); }
+.standings-tbl td:nth-child(1) { color: var(--muted); font-size: 12px; }
+.standings-tbl td:nth-child(2) { text-align: left; }
+
+.my-team-row td {
+  background: rgba(37,99,235,0.1) !important;
+}
+
+.my-team-row td:nth-child(2) { font-weight: 700; color: var(--accent2); }
+
+.pts-td {
+  font-weight: 700;
+  font-size: 15px !important;
+  color: var(--text) !important;
+}
+
+.form-row {
+  display: flex;
+  gap: 3px;
+  justify-content: flex-end;
+}
+
+.fdot { width:7px; height:7px; border-radius:50%; }
+.fdot-W  { background: var(--green); }
+.fdot-OT { background: var(--gold); }
+.fdot-L  { background: rgba(239,68,68,0.5); }
+
+/* ── CONDITIONS ── */
+.conditions-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 28px;
+}
+
+@media(max-width:500px){ .conditions-grid { grid-template-columns:1fr; } }
+
+.cond-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 16px 18px;
+}
+
+.cond-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
+.cond-items {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cond-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+}
+
+.cond-item-label { color: var(--muted2); }
+.cond-item-val { font-weight: 600; }
+.val-good { color: var(--green); }
+.val-warn { color: var(--gold); }
+.val-bad  { color: var(--red); }
+.val-neutral { color: var(--text); }
+
+.progress-bar {
+  height: 4px;
+  background: var(--border2);
+  border-radius: 2px;
+  margin-top: 4px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.6s ease;
+}
+
+/* ── ANIMATIONS ── */
+@keyframes fadeUp {
+  from { opacity:0; transform: translateY(20px); }
+  to   { opacity:1; transform: translateY(0); }
+}
+
+.fade-in {
+  opacity: 0;
+  animation: fadeUp 0.35s forwards;
+}
+
+/* ── MOBILE SEARCH ── */
+@media(max-width:480px){
+  .search-btn span { display:none; }
+  .search-btn { padding: 10px 14px; }
+}
+
+/* ── LEAGUE PAGE ── */
+#leaguePage {
+  display: none;
+  min-height: 100vh;
+  padding: 0 0 80px;
+}
+#leaguePage.visible { display: block; }
+
+.league-hero {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 24px 24px 28px;
+}
+
+.league-hero-title {
+  font-family: 'Bebas Neue', sans-serif;
+  font-size: 48px;
+  letter-spacing: 1px;
+  margin: 16px 0 4px;
+}
+
+.league-hero-sub {
+  font-size: 14px;
+  color: var(--muted2);
+}
+
+.table-wrap { overflow-x: auto; }
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════ HERO ══ -->
+<div id="heroPage">
+  <section class="hero">
+    <div class="hero-bg"></div>
+
+    <div class="hero-logo">
+      <div class="puck">🏒</div>
+      <span class="logo-text">HOCKEYROBBAN</span>
+    </div>
+
+    <h1 class="hero-headline">
+      HITTA<br><em>DITT LAG</em>
+    </h1>
+    <p class="hero-sub">Sök på lag eller serie — från SHL till Hockeyfyran</p>
+
+    <div class="search-wrap">
+      <div class="search-outer">
+        <div class="search-inner">
+          <span class="search-icon">🔍</span>
+          <input
+            type="text"
+            id="searchInput"
+            placeholder="Sök lag eller serie…  t.ex. &quot;Leksand&quot; eller &quot;Hockeyfyran Stockholm&quot;"
+            autocomplete="off"
+          />
+          <button class="search-btn" onclick="doSearch()"><span>Sök</span> ↵</button>
+        </div>
+      </div>
+      <div class="dropdown" id="dropdown"></div>
+
+      <div class="search-hints" id="hints">
+        <div class="hint-chip" onclick="setQuery('Leksand')">Leksand</div>
+        <div class="hint-chip" onclick="setQuery('Djurgården')">Djurgården</div>
+        <div class="hint-chip" onclick="setQuery('Hockeyfyran Stockholm')">Hockeyfyran Stockholm</div>
+        <div class="hint-chip" onclick="setQuery('Modo')">Modo</div>
+        <div class="hint-chip" onclick="setQuery('HockeyEttan')">HockeyEttan</div>
+        <div class="hint-chip" onclick="setQuery('Hockeytrean')">Hockeytrean</div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- ══════════════════════════════════════════ TEAM PAGE ══ -->
+<div id="teamPage">
+  <div class="team-hero" id="teamHero">
+    <button class="back-btn" onclick="goBack()">← Tillbaka</button>
+    <div class="team-title-row">
+      <div class="team-shield" id="teamShield"></div>
+      <div class="team-title-info">
+        <h2 id="teamName"></h2>
+        <div class="team-meta">
+          <span class="team-league-tag" id="teamLeagueTag"></span>
+          <span class="team-city" id="teamCity"></span>
+        </div>
+      </div>
+    </div>
+    <div class="team-tabs">
+      <div class="team-tab active" onclick="showTeamTab('overview', this)">Översikt</div>
+      <div class="team-tab" onclick="showTeamTab('standings', this)">Tabell</div>
+      <div class="team-tab" onclick="showTeamTab('schedule', this)">Schema</div>
+      <div class="team-tab" onclick="showTeamTab('players', this)">Spelare</div>
+      <div class="team-tab" onclick="showTeamTab('teamstats', this)">Lagstatistik</div>
+    </div>
+  </div>
+
+  <div class="content-area">
+    <div id="teamOverview"></div>
+    <div id="teamStandings" style="display:none"></div>
+    <div id="teamSchedule" style="display:none"></div>
+    <div id="teamPlayers" style="display:none"></div>
+    <div id="teamTeamStats" style="display:none"></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════ LEAGUE PAGE ══ -->
+<div id="leaguePage">
+  <div class="league-hero">
+    <button class="back-btn" onclick="goBack()">← Tillbaka</button>
+    <div class="league-hero-title" id="leagueTitle"></div>
+    <div class="league-hero-sub" id="leagueSub"></div>
+  </div>
+  <div class="content-area" id="leagueContent"></div>
+</div>
+
+
+<script>
+// ══════════════════════════════════════════════════════════
+// CONFIG — peka på din lokala backend
+// ══════════════════════════════════════════════════════════
+const API = 'https://hockeyrobban.onrender.com';
+
+// ══════════════════════════════════════════════════════════
+// KÄNDA SERIER (speglar server/index.js KNOWN_GROUPS)
+// ══════════════════════════════════════════════════════════
+const KNOWN_GROUPS = [
+  { id:18263, name:'SHL',                       level:1, region:'Nationell' },
+  { id:19979, name:'HockeyAllsvenskan Slutspel', level:2, region:'Nationell' },
+  { id:19978, name:'HockeyAllsvenskan Play Out', level:2, region:'Nationell' },
+  { id:18264, name:'Hockeyettan',               level:3, region:'Nationell' },
+  { id:19817, name:'Hockeyettan Slutspel Norra', level:3, region:'Nationell' },
+  { id:19818, name:'Hockeyettan Slutspel Södra', level:3, region:'Nationell' },
+  { id:19874, name:'SDHL',                      level:1, region:'Dam' },
+  { id:19820, name:'Hockeyallsvenskan Dam',      level:2, region:'Dam' },
+  { id:18818, name:'HockeyTvåan Öst',           level:4, region:'Region Öst' },
+  { id:19861, name:'HockeyTrean Öst',           level:5, region:'Region Öst' },
+  { id:20059, name:'HockeyFyran Öst',           level:6, region:'Region Öst' },
+  { id:19331, name:'Stockholm (distrikt)',       level:7, region:'Region Öst' },
+  { id:18446, name:'Uppland',                   level:7, region:'Region Öst' },
+  { id:18921, name:'Södermanland',              level:7, region:'Region Öst' },
+  { id:18565, name:'HockeyTvåan Norr',          level:4, region:'Region Norr' },
+  { id:18571, name:'HockeyTrean Norr',          level:5, region:'Region Norr' },
+  { id:19070, name:'Jämtl. Härjedalen',         level:6, region:'Region Norr' },
+  { id:18867, name:'Medelpad',                  level:6, region:'Region Norr' },
+  { id:18909, name:'Norrbotten',                level:6, region:'Region Norr' },
+  { id:18762, name:'Västerbotten',              level:6, region:'Region Norr' },
+  { id:20293, name:'Ångermanland',              level:6, region:'Region Norr' },
+  { id:20285, name:'HockeyTvåan Väst',          level:4, region:'Region Väst' },
+  { id:20351, name:'HockeyTrean Väst',          level:5, region:'Region Väst' },
+  { id:20310, name:'Dalarna',                   level:6, region:'Region Väst' },
+  { id:19485, name:'Gästrikland',               level:6, region:'Region Väst' },
+  { id:19098, name:'Hälsingland',               level:6, region:'Region Väst' },
+  { id:18412, name:'Värmland',                  level:6, region:'Region Väst' },
+  { id:20144, name:'Västmanland',               level:6, region:'Region Väst' },
+  { id:19305, name:'Örebro',                    level:6, region:'Region Väst' },
+  { id:20443, name:'HockeyTvåan Syd',           level:4, region:'Region Syd' },
+  { id:19917, name:'HockeyTrean Syd',           level:5, region:'Region Syd' },
+  { id:18911, name:'Blekinge',                  level:6, region:'Region Syd' },
+  { id:19308, name:'Bohuslän-Dals',             level:6, region:'Region Syd' },
+  { id:19536, name:'Göteborg',                  level:6, region:'Region Syd' },
+  { id:18854, name:'Skåne',                     level:6, region:'Region Syd' },
+  { id:18984, name:'Småland',                   level:6, region:'Region Syd' },
+  { id:19371, name:'Västergötland',             level:6, region:'Region Syd' },
+  { id:18526, name:'Östergötland',              level:6, region:'Region Syd' },
 ];
 
-(function() {
-  const seen = new Set();
-  KNOWN_GROUPS = KNOWN_GROUPS.filter(g => { if (seen.has(g.id)) return false; seen.add(g.id); return true; });
-})();
-
-// ── Dynamisk scraping ───────────────────────────────────────────────────────
-const SKIP_KEYWORDS = [
-  'u8','u9','u10','u11','u12','u13','u14','u15','u16','u17','u18','u19','u20',
-  'junior','preseason','pre-season','camp','landskamp','paraishockey',
-  'rekreation','tv-puck','kval u20','sm-kval','sm-slutspel u','universite',
-  'referee','historical','folkets','halloffame','u 20','u 18','u 16','cup','tournament'
-];
-function shouldSkip(n) { const l=n.toLowerCase(); return SKIP_KEYWORDS.some(k=>l.includes(k)); }
-function inferLevel(n) {
-  const l=n.toLowerCase();
-  if(l.includes('sdhl')||l.includes('shl')) return 1;
-  if(l.includes('allsvenskan')) return 2;
-  if(l.includes('hockeyettan')||l.includes('hockey ettan')) return 3;
-  if(l.includes('tvåan')) return 4;
-  if(l.includes('trean')) return 5;
-  if(l.includes('fyran')||l.includes('forts')||l.includes('topp')||l.includes('kval')) return 6;
-  return 7;
-}
-function inferRegion(n) {
-  const l=n.toLowerCase();
-  if(l.includes('dam')||l.includes('sdhl')) return 'Dam';
-  if(l.includes('norr')||l.includes('norrbotten')||l.includes('västerbotten')||
-     l.includes('ångermanland')||l.includes('medelpad')||l.includes('jämtl')||
-     l.includes('härjedalen')) return 'Region Norr';
-  if(l.includes('dalarna')||l.includes('gästrikland')||l.includes('hälsingland')||
-     l.includes('värmland')||l.includes('västmanland')||l.includes('örebro')) return 'Region Väst';
-  if(l.includes('blekinge')||l.includes('bohuslän')||l.includes('göteborg')||
-     l.includes('skåne')||l.includes('småland')||l.includes('västergötland')||
-     l.includes('östergötland')||l.includes('syd')) return 'Region Syd';
-  if(l.includes('stockholm')||l.includes('uppland')||l.includes('södermanland')||
-     l.includes('gotland')||l.includes('öst')) return 'Region Öst';
-  if(l.includes('väst')) return 'Region Väst';
-  return 'Nationell';
+function levelBadge(level) {
+  if (level === 1) return 'badge-shl';
+  if (level === 2) return 'badge-ha';
+  if (level === 3) return 'badge-h1';
+  if (level === 4) return 'badge-h2';
+  if (level === 5) return 'badge-h3';
+  return 'badge-h4';
 }
 
-let groupsLastFetched = 0;
-async function fetchAllGroups() {
-  if (Date.now() - groupsLastFetched < TTL6H) return KNOWN_GROUPS;
+function levelLabel(level) {
+  const labels = {1:'SHL/SDHL', 2:'Allsvenskan', 3:'HockeyEttan', 4:'Hockeytvåan', 5:'Hockeytrean', 6:'Hockeyfyran/Distrikt', 7:'Distrikt'};
+  return labels[level] || `Nivå ${level}`;
+}
+
+// ══════════════════════════════════════════════════════════
+// API-anrop
+// ══════════════════════════════════════════════════════════
+async function apiFetch(path) {
+  const r = await fetch(API + path);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+// Debounce för sökning
+let searchTimer = null;
+function debounce(fn, ms) {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(fn, ms);
+}
+
+// ══════════════════════════════════════════════════════════
+// SEARCH
+// ══════════════════════════════════════════════════════════
+let selectedIndex = -1;
+let dropItems = [];
+
+const input    = document.getElementById('searchInput');
+const dropdown = document.getElementById('dropdown');
+
+input.addEventListener('input', () => {
+  selectedIndex = -1;
+  const q = input.value.trim();
+  if (!q) { closeDropdown(); return; }
+  showDropdownLoading();
+  debounce(() => fetchAndRenderDropdown(q), 280);
+});
+
+input.addEventListener('keydown', (e) => {
+  if (!dropdown.classList.contains('open')) return;
+  if (e.key === 'ArrowDown') { selectedIndex = Math.min(selectedIndex+1, dropItems.length-1); highlightItem(); e.preventDefault(); }
+  else if (e.key === 'ArrowUp') { selectedIndex = Math.max(selectedIndex-1, 0); highlightItem(); e.preventDefault(); }
+  else if (e.key === 'Enter') {
+    if (selectedIndex >= 0 && dropItems[selectedIndex]) dropItems[selectedIndex].action();
+    e.preventDefault();
+  } else if (e.key === 'Escape') { closeDropdown(); }
+});
+
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.search-wrap')) closeDropdown();
+});
+
+function closeDropdown() {
+  dropdown.classList.remove('open');
+  dropdown.innerHTML = '';
+  dropItems = [];
+}
+
+function showDropdownLoading() {
+  dropdown.innerHTML = `<div class="drop-no-results" style="display:flex;align-items:center;gap:10px">
+    <div class="spin"></div> Söker…
+  </div>`;
+  dropdown.classList.add('open');
+}
+
+function highlightItem() {
+  document.querySelectorAll('.drop-item').forEach((el, i) => {
+    el.classList.toggle('focused', i === selectedIndex);
+  });
+}
+
+async function fetchAndRenderDropdown(q) {
   try {
-    console.log('🔍 Scraping swehockey.se...');
-    const seen = new Set(KNOWN_GROUPS.map(g => g.id));
-    const newGroups = [];
-    function extractFrom(html) {
-      const $ = cheerio.load(html);
-      $('a[href]').each((i, el) => {
-        const href = $(el).attr('href') || '';
-        const m = href.match(/\/ScheduleAndResults\/(?:Overview|Schedule|Standings|Live)\/(\d+)/i);
-        if (!m) return;
-        const id = parseInt(m[1]);
-        if (seen.has(id)) return;
-        seen.add(id);
-        const name = $(el).text().trim();
-        if (!name || name.length < 3 || shouldSkip(name)) return;
-        newGroups.push({ id, name, level: inferLevel(name), region: inferRegion(name) });
-      });
-    }
-    const PAGES = ['/','/ScheduleAndResults/Overview/18263','/ScheduleAndResults/Overview/18818',
-      '/ScheduleAndResults/Overview/18565','/ScheduleAndResults/Overview/20285',
-      '/ScheduleAndResults/Overview/20443','/ScheduleAndResults/Overview/95410',
-      '/ScheduleAndResults/Overview/19270','/ScheduleAndResults/Overview/19874'];
-    await Promise.allSettled(PAGES.map(async (p) => { try { extractFrom(await get(p)); } catch(_){} }));
-    if (newGroups.length > 0) {
-      KNOWN_GROUPS = [...KNOWN_GROUPS, ...newGroups];
-      console.log(`✅ +${newGroups.length} nya serier. Totalt: ${KNOWN_GROUPS.length}`);
-    }
-    groupsLastFetched = Date.now();
-  } catch(e) {
-    console.error('❌ Scraping misslyckades:', e.message);
-    groupsLastFetched = Date.now();
+    const data = await apiFetch(`/api/search?q=${encodeURIComponent(q)}`);
+    renderDropdown(q, data.teams || [], data.leagues || []);
+  } catch (e) {
+    // Fallback till lokal seriematch om backenden är nere
+    const leagues = KNOWN_GROUPS.filter(g => g.name.toLowerCase().includes(q.toLowerCase()));
+    renderDropdown(q, [], leagues.map(g => ({ ...g, sub: `${g.region} · Nivå ${g.level}` })));
   }
-  return KNOWN_GROUPS;
 }
-fetchAllGroups();
 
-// ── Parsers ─────────────────────────────────────────────────────────────────
+function renderDropdown(q, teams, leagues) {
+  if (!teams.length && !leagues.length) {
+    dropdown.innerHTML = `<div class="drop-no-results">Inga resultat för <strong>"${q}"</strong></div>`;
+    dropdown.classList.add('open');
+    dropItems = [];
+    return;
+  }
 
-// Parsar tabellkolumner dynamiskt baserat på th-rubriker
-// Swehockey-format: RK, Team, GP, W, T, L, GF:GA (GD), TP, OTW, OTL, GWSW, GWSL
-function parseStandings(html) {
-  const $ = cheerio.load(html);
-  const groups = [];
-  let currentGroup = { groupName: '', teams: [] };
+  let html = '';
+  dropItems = [];
 
-  $('h2,h3,h4,table').each((i, el) => {
-    const tag = el.name.toLowerCase();
-    if (tag !== 'table') {
-      const title = $(el).text().trim();
-      if (title && title.length > 1) {
-        if (currentGroup.teams.length > 0) groups.push(currentGroup);
-        currentGroup = { groupName: title, teams: [] };
-      }
-      return;
+  if (teams.length) {
+    html += `<div class="drop-section-header">Lag</div>`;
+    teams.forEach(t => {
+      const bc = levelBadge(t.league?.level || 4);
+      const bl = t.league?.name || '';
+      html += `<div class="drop-item">
+        <div class="drop-icon di-team">🏒</div>
+        <div class="drop-main">
+          <div class="drop-name">${hl(t.name, q)}</div>
+          <div class="drop-sub">${bl}</div>
+        </div>
+        <span class="drop-badge ${bc}">${levelLabel(t.league?.level||4)}</span>
+      </div>`;
+      dropItems.push({ action: () => openTeamFromSearch(t) });
+    });
+  }
+
+  if (leagues.length) {
+    html += `<div class="drop-section-header">Serier</div>`;
+    leagues.forEach(l => {
+      html += `<div class="drop-item">
+        <div class="drop-icon di-league">🏆</div>
+        <div class="drop-main">
+          <div class="drop-name">${hl(l.name, q)}</div>
+          <div class="drop-sub">${l.region || ''} · Nivå ${l.level}</div>
+        </div>
+        <span class="drop-badge badge-league">Serie</span>
+      </div>`;
+      dropItems.push({ action: () => openLeague(l.id, l.name) });
+    });
+  }
+
+  dropdown.innerHTML = html;
+  dropdown.classList.add('open');
+
+  dropdown.querySelectorAll('.drop-item').forEach((el, i) => {
+    el.addEventListener('click', () => dropItems[i].action());
+  });
+}
+
+function hl(text, q) {
+  if (!q) return text;
+  const re = new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')})`, 'gi');
+  return text.replace(re, '<mark style="background:rgba(59,130,246,0.3);color:#93c5fd;border-radius:2px">$1</mark>');
+}
+
+function setQuery(q) {
+  input.value = q;
+  input.focus();
+  showDropdownLoading();
+  fetchAndRenderDropdown(q);
+}
+
+// ══════════════════════════════════════════════════════════
+// TEAM PAGE — öppnas från sökresultat (har groupId + namn)
+// ══════════════════════════════════════════════════════════
+let currentTeamData = null;
+let currentGroupId  = null;
+
+function showPage(page) {
+  document.getElementById('heroPage').style.display   = page === 'hero'   ? 'flex'  : 'none';
+  document.getElementById('teamPage').classList.toggle('visible',   page === 'team');
+  document.getElementById('leaguePage').classList.toggle('visible', page === 'league');
+  window.scrollTo(0, 0);
+  closeDropdown();
+}
+
+function loading(el, msg = 'Hämtar data…') {
+  el.innerHTML = `<div style="padding:40px;text-align:center;color:var(--muted)">
+    <div class="spin" style="margin:0 auto 12px"></div>${msg}</div>`;
+}
+
+function errMsg(el, msg) {
+  el.innerHTML = `<div style="padding:32px;text-align:center;color:var(--red)">⚠️ ${msg}<br>
+    <small style="color:var(--muted);display:block;margin-top:8px">
+      Kontrollera att backend körs: <code>cd server && node index.js</code>
+    </small></div>`;
+}
+
+async function openTeamFromSearch(teamData) {
+  currentTeamData = teamData;
+  currentGroupId  = teamData.league?.id;
+  showPage('team');
+
+  // Header
+  document.getElementById('teamShield').textContent = '🏒';
+  document.getElementById('teamShield').style.background = 'rgba(37,99,235,0.15)';
+  document.getElementById('teamName').textContent = teamData.name;
+
+  const lv = teamData.league?.level || 4;
+  const tag = document.getElementById('teamLeagueTag');
+  tag.textContent = teamData.league?.name || levelLabel(lv);
+  tag.className = 'team-league-tag ' + levelBadge(lv);
+  document.getElementById('teamCity').textContent = `Plats ${teamData.pos} · ${teamData.league?.name || ''}`;
+
+  showTeamTab('overview', document.querySelector('.team-tab'));
+  await loadTeamOverview(teamData);
+}
+
+async function loadTeamOverview(team) {
+  const el = document.getElementById('teamOverview');
+  loading(el);
+  try {
+    // Hämta schema parallellt med tabelldata (tabell är redan i team-objektet)
+    const schedule = await apiFetch(`/api/team-schedule/${currentGroupId}/${encodeURIComponent(team.name)}`);
+    renderTeamOverview(team, schedule);
+  } catch (e) {
+    errMsg(el, 'Kunde inte hämta matchdata.');
+  }
+}
+
+function renderTeamOverview(team, schedule) {
+  const el = document.getElementById('teamOverview');
+
+  // Senaste och nästa match
+  const played   = schedule.filter(g => g.played).sort((a,b) => b.date.localeCompare(a.date));
+  const upcoming = schedule.filter(g => !g.played).sort((a,b) => a.date.localeCompare(b.date));
+  const last = played[0];
+  const next = upcoming[0];
+
+  const total = team.league?.teamCount || '?';
+  const diff  = team.gf - team.ga;
+  const diffSign = diff > 0 ? '+' : '';
+  const winPct = team.gp > 0 ? Math.round(((team.w + (team.otw||0) * 0.5) / team.gp) * 100) : 0;
+
+  function matchCard(g, isTeam) {
+    if (!g) return `<div class="match-card"><div class="match-body" style="justify-content:center;color:var(--muted);font-size:13px">Ingen match hittad</div></div>`;
+    const isHome   = g.home.toLowerCase().includes(team.name.toLowerCase().split(' ')[0]);
+    const myScore  = isHome ? g.scoreHome : g.scoreAway;
+    const oppScore = isHome ? g.scoreAway : g.scoreHome;
+    const opp      = isHome ? g.away : g.home;
+
+    if (g.played) {
+      const win = myScore > oppScore;
+      const label = win
+        ? `<span class="match-result-label result-w">${g.overtime?'OT-SEGER':'SEGER'}</span>`
+        : myScore < oppScore
+          ? `<span class="match-result-label result-l">${g.overtime?'OT-FÖRLUST':'FÖRLUST'}</span>`
+          : `<span class="match-result-label result-d">OT</span>`;
+      return `<div class="match-card highlight">
+        <div class="match-top"><span>${g.date}</span><span class="match-top-status status-final">SLUTRESULTAT</span></div>
+        <div class="match-body">
+          <div class="match-team"><div class="match-team-name">${isHome ? team.name : opp}</div><div class="match-team-short">${isHome?'🏠 Hemma':'✈️ Borta'}</div></div>
+          <div class="match-score-center"><div class="match-score">${isHome?myScore:oppScore}–${isHome?oppScore:myScore}</div>${label}</div>
+          <div class="match-team right"><div class="match-team-name">${isHome ? opp : team.name}</div></div>
+        </div>
+      </div>`;
+    } else {
+      return `<div class="match-card highlight">
+        <div class="match-top"><span>${g.date}</span><span class="match-top-status status-upcoming">KOMMANDE · ${g.time||''}</span></div>
+        <div class="match-body">
+          <div class="match-team"><div class="match-team-name">${isHome ? team.name : opp}</div><div class="match-team-short">${isHome?'🏠 Hemmaplan':'✈️ Bortagame'}</div></div>
+          <div class="match-score-center"><div class="match-score upcoming">VS</div></div>
+          <div class="match-team right"><div class="match-team-name">${isHome ? opp : team.name}</div></div>
+        </div>
+      </div>`;
     }
+  }
 
-    // Läs kolumnrubriker från th-raden
-    const headers = [];
-    $(el).find('thead tr th, tr th').first().parent().find('th').each((j, th) => {
-      headers.push($(th).text().trim().toLowerCase());
-    });
-    // Fallback: kolla första tr med td om ingen thead
-    if (headers.length === 0) {
-      $(el).find('tr').first().find('td').each((j, td) => {
-        headers.push($(td).text().trim().toLowerCase());
-      });
+  el.innerHTML = `
+  <div class="fade-in">
+    <div class="cards-row">
+      <div class="stat-card">
+        <div class="stat-card-label">Tabellplats</div>
+        <div class="stat-card-value">${team.pos}</div>
+        <div class="stat-card-sub">${team.league?.name || ''}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-label">Poäng</div>
+        <div class="stat-card-value">${team.pts}</div>
+        <div class="stat-card-sub">${team.gp} matcher spelade</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-label">Målskillnad</div>
+        <div class="stat-card-value" style="color:${diff>=0?'var(--green)':'var(--red)'}">${diffSign}${diff}</div>
+        <div class="stat-card-sub">${team.gf} gjorda · ${team.ga} insläppta</div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:28px">
+      <div><div class="section-label">Senaste match</div>${matchCard(last)}</div>
+      <div><div class="section-label">Nästa match</div>${matchCard(next)}</div>
+    </div>
+
+    <div class="conditions-grid">
+      <div class="cond-card">
+        <div class="cond-title">📊 Tabellläge</div>
+        <div class="cond-items">
+          <div class="cond-item"><span class="cond-item-label">V / OT / F</span><span class="cond-item-val val-neutral">${team.w} / ${(team.otw||0)+(team.otl||0)} / ${team.l}</span></div>
+          <div class="cond-item"><span class="cond-item-label">Gjorda mål</span><span class="cond-item-val val-neutral">${team.gf}</span></div>
+          <div class="cond-item"><span class="cond-item-label">Insläppta mål</span><span class="cond-item-val val-neutral">${team.ga}</span></div>
+        </div>
+      </div>
+      <div class="cond-card">
+        <div class="cond-title">🔥 Säsongsstatistik</div>
+        <div class="cond-items">
+          <div class="cond-item"><span class="cond-item-label">Vinstprocent</span><span class="cond-item-val ${winPct>=55?'val-good':winPct>=40?'val-warn':'val-bad'}">${winPct}%</span></div>
+          <div class="cond-item"><span class="cond-item-label">Poäng per match</span><span class="cond-item-val val-neutral">${team.gp>0?(team.pts/team.gp).toFixed(2):'–'}</span></div>
+        </div>
+        <div class="progress-bar" style="margin-top:12px">
+          <div class="progress-fill" style="width:${winPct}%;background:${winPct>=55?'var(--green)':winPct>=40?'var(--gold)':'var(--red)'}"></div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+// ── Tabell-fliken ──────────────────────────────────────────
+async function loadTeamStandings() {
+  const el = document.getElementById('teamStandings');
+  loading(el);
+  try {
+    const standings = await apiFetch(`/api/standings/${currentGroupId}`);
+    renderStandingsInTeamPage(standings, currentTeamData?.name);
+  } catch (e) {
+    errMsg(el, 'Kunde inte hämta tabelldata.');
+  }
+}
+
+function renderStandingsInTeamPage(groups, myName) {
+  if (!Array.isArray(groups) || !groups[0]?.teams) groups = [{ groupName: '', teams: groups }];
+  const sections = groups.map(g => {
+    const header = g.groupName ? `<div class="group-heading">${g.groupName}</div>` : '';
+    const rows = (g.teams || []).map(t => {
+      const isMe = myName && t.name.toLowerCase().includes(myName.toLowerCase().split(' ')[0]);
+      const gd = t.gd !== undefined ? t.gd : (t.gf - t.ga);
+      return `<tr class="${isMe ? 'my-team-row' : ''}">
+        <td>${t.pos}</td>
+        <td>${t.name}${isMe ? ' ◀' : ''}</td>
+        <td>${t.gp}</td>
+        <td>${t.w}</td>
+        <td>${t.t ?? t.otw ?? 0}</td>
+        <td>${t.l}</td>
+        <td style="font-size:12px">${t.gf}:${t.ga} <span style="color:var(--muted)">(${gd > 0 ? '+' : ''}${gd})</span></td>
+        <td class="pts-td" style="color:var(--accent2)">${t.tp || t.pts || 0}</td>
+        ${t.otw !== undefined ? `<td style="color:var(--muted);font-size:12px">${t.otw}</td>` : ''}
+        ${t.otl !== undefined ? `<td style="color:var(--muted);font-size:12px">${t.otl}</td>` : ''}
+        ${t.gwsw !== undefined ? `<td style="color:var(--muted);font-size:12px">${t.gwsw}</td>` : ''}
+      </tr>`;
+    }).join('');
+    const hasOtw = (g.teams||[]).some(t => t.otw !== undefined);
+    const extraTh = hasOtw ? '<th title="Overtime wins">OTW</th><th title="Overtime losses">OTL</th><th title="Shootout wins">GWS</th>' : '';
+    return `${header}<div class="table-wrap"><table class="standings-tbl">
+      <thead><tr><th>#</th><th>Lag</th><th>M</th><th>V</th><th>T</th><th>F</th><th>GM:GI (GD)</th><th title="Totalpoäng">TP</th>${extraTh}</tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
+  }).join('');
+  document.getElementById('teamStandings').innerHTML = `<div class="fade-in">${sections}</div>`;
+}
+
+// ── Schema-fliken ──────────────────────────────────────────
+async function loadTeamSchedule() {
+  const el = document.getElementById('teamSchedule');
+  loading(el);
+  try {
+    const schedule = await apiFetch(`/api/team-schedule/${currentGroupId}/${encodeURIComponent(currentTeamData.name)}`);
+    renderFullSchedule(schedule, currentTeamData.name);
+  } catch (e) {
+    errMsg(el, 'Kunde inte hämta schemat.');
+  }
+}
+
+function renderFullSchedule(games, teamName) {
+  const tname = teamName.toLowerCase().split(' ')[0];
+  const rows = games.map(g => {
+    const isHome = g.home.toLowerCase().includes(tname);
+    const opp    = isHome ? g.away : g.home;
+    let result = '–';
+    let resClass = '';
+    if (g.played) {
+      const myScore  = isHome ? g.scoreHome : g.scoreAway;
+      const oppScore = isHome ? g.scoreAway : g.scoreHome;
+      result = `${myScore}–${oppScore}${g.overtime ? ' OT' : ''}`;
+      resClass = myScore > oppScore ? 'val-good' : myScore < oppScore ? 'val-bad' : 'val-warn';
     }
+    const periods = g.periods && g.periods.length ? 
+      `<span style="color:var(--muted);font-size:11px"> (${g.periods.map(p => isHome ? p.home+'-'+p.away : p.away+'-'+p.home).join(', ')})</span>` : '';
+    const otTag = g.shootout ? ' <span style="color:var(--muted);font-size:11px">SO</span>' 
+                : g.overtime ? ' <span style="color:var(--muted);font-size:11px">OT</span>' : '';
+    return `<tr>
+      <td>${g.date}</td>
+      <td>${isHome ? '🏠' : '✈️'}</td>
+      <td style="text-align:left">${opp}</td>
+      <td class="${resClass}" style="font-weight:${g.played?'600':'400'}">${result}${otTag}${periods}</td>
+      <td style="color:var(--muted);font-size:12px">${g.played ? (g.venue || 'Spelad') : g.time || ''}</td>
+    </tr>`;
+  }).join('');
 
-    // Bygg kolumnindex-map
-    const idx = {
-      pos:  headers.findIndex(h => h === 'rk' || h === '#' || h === 'plats'),
-      name: headers.findIndex(h => h === 'team' || h === 'lag' || h === 'name'),
-      gp:   headers.findIndex(h => h === 'gp' || h === 'm' || h === 'gm'),
-      w:    headers.findIndex(h => h === 'w' || h === 'v'),
-      t:    headers.findIndex(h => h === 't'),
-      l:    headers.findIndex(h => h === 'l' || h === 'f'),
-      gfga: headers.findIndex(h => h.includes('gf') || h.includes('gm') && h.includes('gi')),
-      tp:   headers.findIndex(h => h === 'tp'),
-      otw:  headers.findIndex(h => h === 'otw'),
-      otl:  headers.findIndex(h => h === 'otl'),
-      gwsw: headers.findIndex(h => h === 'gwsw'),
-      gwsl: headers.findIndex(h => h === 'gwsl'),
-    };
-
-    $(el).find('tr').each((j, row) => {
-      const cells = $(row).find('td');
-      if (cells.length < 5) return;
-
-      const getText = (colIdx) => colIdx >= 0 && colIdx < cells.length
-        ? $(cells[colIdx]).text().trim() : '';
-
-      // Försök med header-baserat index, annars positionsbaserat
-      const posText = idx.pos >= 0 ? getText(idx.pos) : $(cells[0]).text().trim();
-      const pos = parseInt(posText);
-      if (isNaN(pos)) return;
-
-      const nameCell = idx.name >= 0 ? $(cells[idx.name]) : $(cells[1]);
-      const nameLink = nameCell.find('a').first();
-      const name = (nameLink.length ? nameLink.text() : nameCell.text()).trim();
-      if (!name) return;
-
-      // Samla alla celltexter (kolumn 2+) för fallback-parsning
-      const allTexts = [];
-      cells.each((k, cell) => { if (k >= 2) allTexts.push($(cell).text().trim()); });
-
-      // TP — leta explicit kolumn, annars sista kolumnen
-      const tp = idx.tp >= 0 ? (parseInt(getText(idx.tp)) || 0)
-                              : (parseInt(allTexts[allTexts.length - 1]) || 0);
-
-      const gp = idx.gp >= 0 ? (parseInt(getText(idx.gp)) || 0) : (parseInt(allTexts[0]) || 0);
-      const w  = idx.w  >= 0 ? (parseInt(getText(idx.w))  || 0) : (parseInt(allTexts[1]) || 0);
-      const t  = idx.t  >= 0 ? (parseInt(getText(idx.t))  || 0) : (parseInt(allTexts[2]) || 0);
-      const l  = idx.l  >= 0 ? (parseInt(getText(idx.l))  || 0) : (parseInt(allTexts[3]) || 0);
-
-      // GF:GA — leta cell med kolon-format "66:38 (28)" eller "66:38"
-      let gf = 0, ga = 0, gd = 0;
-      for (const txt of allTexts) {
-        const m = txt.match(/(\d+)[:\s]+(\d+)(?:\s*\(([+-]?\d+)\))?/);
-        if (m && parseInt(m[1]) > 0) {
-          gf = parseInt(m[1]); ga = parseInt(m[2]);
-          gd = m[3] ? parseInt(m[3]) : gf - ga;
-          break;
-        }
-      }
-
-      const otw  = idx.otw  >= 0 ? (parseInt(getText(idx.otw))  || 0) : 0;
-      const otl  = idx.otl  >= 0 ? (parseInt(getText(idx.otl))  || 0) : 0;
-      const gwsw = idx.gwsw >= 0 ? (parseInt(getText(idx.gwsw)) || 0) : 0;
-      const gwsl = idx.gwsl >= 0 ? (parseInt(getText(idx.gwsl)) || 0) : 0;
-
-      currentGroup.teams.push({ pos, name, gp, w, t, l, gf, ga, gd, tp, otw, otl, gwsw, gwsl });
-    });
-  });
-
-  if (currentGroup.teams.length > 0) groups.push(currentGroup);
-  if (groups.length === 0) return [{ groupName: '', teams: [] }];
-  return groups;
+  document.getElementById('teamSchedule').innerHTML = `
+  <div class="fade-in">
+    <div class="table-wrap">
+      <table class="standings-tbl">
+        <thead><tr><th style="text-align:left">Datum</th><th>H/B</th><th style="text-align:left">Motståndare</th><th>Resultat</th><th>Status</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="5" style="text-align:center;color:var(--muted);padding:24px">Inga matcher hittade</td></tr>'}</tbody>
+      </table>
+    </div>
+  </div>`;
 }
 
-// Parsar Results/schema — med periodresultat
-function parseSchedule(html) {
-  const $ = cheerio.load(html);
-  const games = [];
-  $('table tr').each((i, row) => {
-    const cells = $(row).find('td');
-    if (cells.length < 5) return;
-    const dateText  = $(cells[0]).text().trim();
-    const timeText  = $(cells[1]).text().trim();
-    const homeText  = $(cells[2]).text().trim();
-    const scoreText = $(cells[3]).text().trim();
-    const awayText  = $(cells[4]).text().trim();
-    if (!dateText || !homeText || !awayText) return;
-    if (dateText.toLowerCase().includes('datum') || dateText.toLowerCase().includes('date')) return;
+// ── Spelare-fliken ─────────────────────────────────────────
+async function loadTeamPlayers() {
+  const el = document.getElementById('teamPlayers');
+  loading(el);
+  try {
+    const players = await apiFetch(`/api/players/${currentGroupId}`);
+    if (!players.length) { el.innerHTML = '<div style="padding:24px;color:var(--muted);text-align:center">Ingen spelarstatistik tillgänglig för denna serie</div>'; return; }
+    // Filtrera på lagets spelare om vi vet laget
+    const myTeam = currentTeamData?.name?.toLowerCase().split(' ')[0];
+    const mine = myTeam ? players.filter(p => p.team.toLowerCase().includes(myTeam)) : [];
+    const allRows = players.map(p => {
+      const isMe = myTeam && p.team.toLowerCase().includes(myTeam);
+      return `<tr class="${isMe ? 'my-team-row' : ''}">
+        <td>${p.pos}</td>
+        <td style="text-align:left;font-weight:${isMe?'600':'400'}">${p.name}</td>
+        <td style="text-align:left;color:var(--muted);font-size:12px">${p.team}</td>
+        <td>${p.gp}</td>
+        <td style="color:var(--green)">${p.g}</td>
+        <td>${p.a}</td>
+        <td class="pts-td" style="color:var(--accent2)">${p.tp}</td>
+        <td style="color:var(--muted);font-size:12px">${p.pim}</td>
+        ${p.pm !== 0 ? `<td style="color:${p.pm>0?'var(--green)':'var(--red)'};font-size:12px">${p.pm>0?'+':''}${p.pm}</td>` : '<td style="color:var(--muted);font-size:12px">0</td>'}
+        <td style="color:var(--muted);font-size:12px">${p.ppg||0}</td>
+      </tr>`;
+    }).join('');
 
-    // Huvudresultat: "8 - 3" eller "8-3"
-    const scoreMatch = scoreText.match(/(\d+)\s*[-–]\s*(\d+)/);
-    const played = !!scoreMatch;
-    const scoreHome = played ? parseInt(scoreMatch[1]) : null;
-    const scoreAway = played ? parseInt(scoreMatch[2]) : null;
-    const overtime  = scoreText.includes('OT') || scoreText.includes('SO');
-    const shootout  = scoreText.includes('SO');
-
-    // Periodresultat: "(3-1, 2-1, 3-1)" i cell 5+ eller i score-cellen
-    let periods = [];
-    const periodSource = cells.length > 5 ? $(cells[5]).text().trim() : scoreText;
-    const periodMatch = periodSource.match(/\(([^)]+)\)/);
-    if (periodMatch) {
-      periods = periodMatch[1].split(',').map(s => {
-        const m = s.trim().match(/(\d+)[–-](\d+)/);
-        return m ? { home: parseInt(m[1]), away: parseInt(m[2]) } : null;
-      }).filter(Boolean);
-    }
-
-    // Venue — cell 6 om det finns
-    const venue = cells.length > 6 ? $(cells[6]).text().trim() : '';
-    // Spectators — cell 5 om 7+ kolumner
-    const spectators = cells.length > 7 ? parseInt($(cells[5]).text().trim()) || null : null;
-
-    const gameLink = $(cells[3]).find('a').attr('href') || $(row).find('a').attr('href') || '';
-    const gameIdM  = gameLink.match(/\/(\d+)$/);
-
-    games.push({
-      date: dateText.replace(/\s+/,' ').trim(), time: timeText,
-      home: homeText.replace(/\s+/,' ').trim(), away: awayText.replace(/\s+/,' ').trim(),
-      scoreHome, scoreAway, played, overtime, shootout, periods,
-      spectators, venue,
-      gameId: gameIdM ? gameIdM[1] : null, raw: scoreText
-    });
-  });
-  return games;
+    el.innerHTML = `<div class="fade-in">
+      ${mine.length ? `<div class="section-label" style="margin-bottom:8px">Markerat: ${currentTeamData.name}s spelare</div>` : ''}
+      <div class="table-wrap"><table class="standings-tbl">
+        <thead><tr>
+          <th>#</th><th style="text-align:left">Spelare</th><th style="text-align:left">Lag</th>
+          <th title="Matcher">M</th><th title="Mål">G</th><th title="Assists">A</th>
+          <th title="Totalpoäng">TP</th><th title="Utvisningsminuter">PIM</th>
+          <th title="Plus/Minus">+/-</th><th title="Powerplay-mål">PP</th>
+        </tr></thead>
+        <tbody>${allRows}</tbody>
+      </table></div>
+    </div>`;
+  } catch (e) {
+    el.innerHTML = '<div style="padding:24px;color:var(--muted);text-align:center">Spelarstatistik ej tillgänglig</div>';
+  }
 }
 
-// Parsar spelarstatistik — /Statistics/Players/groupId
-function parsePlayerStats(html) {
-  const $ = cheerio.load(html);
-  const players = [];
+// ── Lagstatistik-fliken ────────────────────────────────────
+async function loadTeamTeamStats() {
+  const el = document.getElementById('teamTeamStats');
+  loading(el);
+  try {
+    const teams = await apiFetch(`/api/teamstats/${currentGroupId}`);
+    if (!teams.length) { el.innerHTML = '<div style="padding:24px;color:var(--muted);text-align:center">Ingen lagstatistik tillgänglig</div>'; return; }
+    const myTeam = currentTeamData?.name?.toLowerCase().split(' ')[0];
+    const rows = teams.map(t => {
+      const isMe = myTeam && t.name.toLowerCase().includes(myTeam);
+      return `<tr class="${isMe ? 'my-team-row' : ''}">
+        <td>${t.pos}</td>
+        <td style="text-align:left;font-weight:${isMe?'600':'400'}">${t.name}${isMe?' ◀':''}</td>
+        <td>${t.gp}</td>
+        <td style="color:var(--green)">${t.g}</td>
+        <td>${t.a}</td>
+        <td class="pts-td">${t.tp}</td>
+        <td style="color:var(--muted);font-size:12px">${t.pim}</td>
+        <td style="color:var(--accent);font-size:12px">${t.ppg}</td>
+        <td style="color:var(--muted);font-size:12px">${t.ppga}</td>
+        <td style="color:var(--accent2);font-size:12px">${t.shg||0}</td>
+        <td style="color:var(--muted);font-size:12px">${t.gwg||0}</td>
+      </tr>`;
+    }).join('');
 
-  // Läs kolumnrubriker
-  const headers = [];
-  $('table thead tr th, table tr th').first().parent().find('th').each((j, th) => {
-    headers.push($(th).text().trim().toLowerCase());
-  });
-
-  $('table tr').each((i, row) => {
-    const cells = $(row).find('td');
-    if (cells.length < 5) return;
-    const pos = parseInt($(cells[0]).text().trim());
-    if (isNaN(pos)) return;
-
-    const nameCell = $(cells[1]);
-    const name = nameCell.find('a').first().text().trim() || nameCell.text().trim();
-    if (!name) return;
-
-    const teamCell = $(cells[2]);
-    const team = teamCell.text().trim();
-
-    const allTexts = [];
-    cells.each((k, c) => allTexts.push($(c).text().trim()));
-
-    // Vanliga kolumnnamn: #, Player, Team, GP, G, A, TP, PIM, +/-, PPG, SHG, GWG
-    const idx = {
-      gp:  headers.findIndex(h => h === 'gp'),
-      g:   headers.findIndex(h => h === 'g' || h === 'goals'),
-      a:   headers.findIndex(h => h === 'a' || h === 'assists'),
-      tp:  headers.findIndex(h => h === 'tp' || h === 'pts'),
-      pim: headers.findIndex(h => h === 'pim'),
-      pm:  headers.findIndex(h => h === '+/-'),
-      ppg: headers.findIndex(h => h === 'ppg'),
-      shg: headers.findIndex(h => h === 'shg'),
-      gwg: headers.findIndex(h => h === 'gwg'),
-    };
-
-    const g = (c, fb) => c >= 0 ? (parseInt(allTexts[c]) || 0) : fb;
-    players.push({
-      pos,
-      name,
-      team,
-      gp:  g(idx.gp,  parseInt(allTexts[3]) || 0),
-      g:   g(idx.g,   parseInt(allTexts[4]) || 0),
-      a:   g(idx.a,   parseInt(allTexts[5]) || 0),
-      tp:  g(idx.tp,  parseInt(allTexts[6]) || 0),
-      pim: g(idx.pim, parseInt(allTexts[7]) || 0),
-      pm:  idx.pm >= 0 ? (parseInt(allTexts[idx.pm]) || 0) : 0,
-      ppg: g(idx.ppg, 0),
-      shg: g(idx.shg, 0),
-      gwg: g(idx.gwg, 0),
-    });
-  });
-  return players;
+    el.innerHTML = `<div class="fade-in">
+      <div class="table-wrap"><table class="standings-tbl">
+        <thead><tr>
+          <th>#</th><th style="text-align:left">Lag</th>
+          <th title="Matcher">M</th><th title="Mål">G</th><th title="Assists">A</th>
+          <th title="Totalpoäng">TP</th><th title="Utvisningsminuter">PIM</th>
+          <th title="Powerplay-mål gjorda">PPG</th><th title="Powerplay-mål insläppta">PPGA</th>
+          <th title="Understyrka-mål">SHG</th><th title="Avgörande mål">GWG</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>
+    </div>`;
+  } catch (e) {
+    el.innerHTML = '<div style="padding:24px;color:var(--muted);text-align:center">Lagstatistik ej tillgänglig</div>';
+  }
 }
 
-// Parsar lagstatistik — /Statistics/Teams/groupId
-function parseTeamStats(html) {
-  const $ = cheerio.load(html);
-  const teams = [];
+function showTeamTab(name, el) {
+  document.querySelectorAll('.team-tab').forEach(t => t.classList.remove('active'));
+  if (el) el.classList.add('active');
+  ['teamOverview','teamStandings','teamSchedule','teamPlayers','teamTeamStats'].forEach(id => document.getElementById(id).style.display = 'none');
+  const map = { overview:'teamOverview', standings:'teamStandings', schedule:'teamSchedule', players:'teamPlayers', teamstats:'teamTeamStats' };
+  document.getElementById(map[name]).style.display = 'block';
 
-  const headers = [];
-  $('table thead tr th, table tr th').first().parent().find('th').each((j, th) => {
-    headers.push($(th).text().trim().toLowerCase());
-  });
-
-  $('table tr').each((i, row) => {
-    const cells = $(row).find('td');
-    if (cells.length < 4) return;
-    const pos = parseInt($(cells[0]).text().trim());
-    if (isNaN(pos)) return;
-    const nameCell = $(cells[1]);
-    const name = nameCell.find('a').first().text().trim() || nameCell.text().trim();
-    if (!name) return;
-
-    const allTexts = [];
-    cells.each((k, c) => allTexts.push($(c).text().trim()));
-
-    teams.push({
-      pos,
-      name,
-      // Vanliga lagstat-kolumner: GP, G, A, TP, PIM, PPG, PPGA, SHG, SHGA, GWG, hits, fo%
-      gp:   parseInt(allTexts[2]) || 0,
-      g:    parseInt(allTexts[3]) || 0,
-      a:    parseInt(allTexts[4]) || 0,
-      tp:   parseInt(allTexts[5]) || 0,
-      pim:  parseInt(allTexts[6]) || 0,
-      ppg:  parseInt(allTexts[7]) || 0,
-      ppga: parseInt(allTexts[8]) || 0,
-      shg:  parseInt(allTexts[9]) || 0,
-      shga: parseInt(allTexts[10]) || 0,
-      gwg:  parseInt(allTexts[11]) || 0,
-      raw: allTexts,
-    });
-  });
-  return teams;
+  // Lazy-load tabeller
+  if (name === 'standings' && currentGroupId) loadTeamStandings();
+  if (name === 'players' && currentGroupId) loadTeamPlayers();
+  if (name === 'teamstats' && currentGroupId) loadTeamTeamStats();
+  if (name === 'schedule'  && currentGroupId) loadTeamSchedule();
 }
 
-// ── Routes ──────────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════
+// LEAGUE PAGE
+// ══════════════════════════════════════════════════════════
+async function openLeague(groupId, name) {
+  showPage('league');
+  document.getElementById('leagueTitle').textContent = name || `Serie #${groupId}`;
+  const sub = KNOWN_GROUPS.find(g => g.id === groupId);
+  document.getElementById('leagueSub').textContent = sub ? `${sub.region} · Nivå ${sub.level}` : '';
 
-app.get('/api/leagues', async (req, res) => res.json(await fetchAllGroups()));
-
-app.get('/api/standings/:groupId', async (req, res) => {
+  const el = document.getElementById('leagueContent');
+  loading(el);
   try {
-    const data = await cached(`standings:${req.params.groupId}`, TTL5, async () =>
-      parseStandings(await get(`/ScheduleAndResults/Standings/${req.params.groupId}`))
-    );
-    res.json(data);
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
+    const standingGroups = await apiFetch(`/api/standings/${groupId}`);
+    const groups2 = Array.isArray(standingGroups) && standingGroups[0]?.teams ? standingGroups : [{ groupName: '', teams: standingGroups }];
+    const sections2 = groups2.map(g => {
+      const header = g.groupName ? `<div class="group-heading">${g.groupName}</div>` : '';
+      const hasOtw = (g.teams||[]).some(t => t.otw !== undefined);
+      const extraTh = hasOtw ? '<th title="OT wins">OTW</th><th title="OT losses">OTL</th>' : '';
+      const rows = (g.teams || []).map(t => {
+        const gd = t.gd !== undefined ? t.gd : (t.gf - t.ga);
+        const extraTd = hasOtw ? `<td style="color:var(--muted);font-size:12px">${t.otw||0}</td><td style="color:var(--muted);font-size:12px">${t.otl||0}</td>` : '';
+        return `<tr style="cursor:pointer" onclick='openTeamFromSearch(${JSON.stringify({...t, league: sub})})'>
+          <td>${t.pos}</td>
+          <td style="color:var(--accent2);font-weight:500">${t.name}</td>
+          <td>${t.gp}</td><td>${t.w}</td><td>${t.t ?? 0}</td><td>${t.l}</td>
+          <td style="font-size:12px">${t.gf}:${t.ga} <span style="color:var(--muted)">(${gd>0?'+':''}${gd})</span></td>
+          <td class="pts-td" style="color:var(--accent2)">${t.tp || t.pts || 0}</td>
+          ${extraTd}
+        </tr>`;
+      }).join('');
+      return `${header}<div class="table-wrap"><table class="standings-tbl">
+        <thead><tr><th>#</th><th>Lag</th><th>M</th><th>V</th><th>T</th><th>F</th><th>GM:GI (GD)</th><th title="Totalpoäng">TP</th>${extraTh}</tr></thead>
+        <tbody>${rows || '<tr><td colspan="11" style="text-align:center;padding:24px;color:var(--muted)">Ingen data</td></tr>'}</tbody>
+      </table></div>`;
+    }).join('');
 
-app.get('/api/schedule/:groupId', async (req, res) => {
-  try {
-    const data = await cached(`schedule:${req.params.groupId}`, TTL5, async () =>
-      parseSchedule(await get(`/ScheduleAndResults/Schedule/${req.params.groupId}`))
-    );
-    res.json(data);
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
+    el.innerHTML = `
+    <div class="fade-in">
+      <div class="section-label" style="margin-bottom:14px">Tabell — klicka på lag för detaljvy</div>
+      ${sections2}
+    </div>`;
+  } catch(e) {
+    errMsg(el, 'Kunde inte hämta tabelldata.');
+  }
+}
 
-// Spelarstatistik för en serie
-app.get('/api/players/:groupId', async (req, res) => {
-  try {
-    const data = await cached(`players:${req.params.groupId}`, TTL5, async () =>
-      parsePlayerStats(await get(`/Statistics/Players/${req.params.groupId}`))
-    );
-    res.json(data);
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
+// ══════════════════════════════════════════════════════════
+// NAV
+// ══════════════════════════════════════════════════════════
+function goBack() { showPage('hero'); }
+</script>
 
-// Lagstatistik för en serie
-app.get('/api/teamstats/:groupId', async (req, res) => {
-  try {
-    const data = await cached(`teamstats:${req.params.groupId}`, TTL5, async () =>
-      parseTeamStats(await get(`/Statistics/Teams/${req.params.groupId}`))
-    );
-    res.json(data);
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// Debug — dumpa råhtmlen för ett path (för felsökning av parsers)
-app.get('/api/debug-html', async (req, res) => {
-  const p = req.query.path;
-  if (!p || !p.startsWith('/')) return res.status(400).json({ error: 'bad path' });
-  try {
-    const html = await get(p);
-    const $ = cheerio.load(html);
-    // Returnera: alla th-rubriker + första 3 datarader per tabell
-    const tables = [];
-    $('table').each((i, tbl) => {
-      const headers = [];
-      $(tbl).find('th').each((j, th) => headers.push($(th).text().trim()));
-      const rows = [];
-      $(tbl).find('tr').slice(0,5).each((j, row) => {
-        const cells = [];
-        $(row).find('td').each((k, td) => cells.push($(td).text().trim()));
-        if (cells.length) rows.push(cells);
-      });
-      if (headers.length || rows.length) tables.push({ headers, rows });
-    });
-    res.json({ path: p, tables });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
-app.get('/api/search', async (req, res) => {
-  const q = (req.query.q || '').trim().toLowerCase();
-  if (q.length < 2) return res.json({ teams: [], leagues: [] });
-  const groups  = await fetchAllGroups();
-  const leagues = groups.filter(g => g.name.toLowerCase().includes(q));
-  const teamResults = [];
-  await Promise.allSettled(groups.map(async (group) => {
-    try {
-      const standingGroups = await cached(`standings:${group.id}`, TTL30, async () =>
-        parseStandings(await get(`/ScheduleAndResults/Standings/${group.id}`))
-      );
-      standingGroups.flatMap(g => g.teams).forEach(t => {
-        if (t.name.toLowerCase().includes(q)) teamResults.push({ ...t, league: group });
-      });
-    } catch (_) {}
-  }));
-  const best = new Map();
-  teamResults.forEach(t => {
-    const key = t.name.toLowerCase();
-    if (!best.has(key) || t.league.level < best.get(key).league.level) best.set(key, t);
-  });
-  const deduped = Array.from(best.values()).sort((a, b) => {
-    const as = a.name.toLowerCase().startsWith(q) ? 0 : 1;
-    const bs = b.name.toLowerCase().startsWith(q) ? 0 : 1;
-    return as - bs || a.league.level - b.league.level;
-  });
-  res.json({ teams: deduped.slice(0, 10), leagues: leagues.slice(0, 6) });
-});
-
-app.get('/api/team-schedule/:groupId/:teamName', async (req, res) => {
-  const name = decodeURIComponent(req.params.teamName).toLowerCase();
-  try {
-    const games = await cached(`schedule:${req.params.groupId}`, TTL5, async () =>
-      parseSchedule(await get(`/ScheduleAndResults/Schedule/${req.params.groupId}`))
-    );
-    res.json(games.filter(g =>
-      g.home.toLowerCase().includes(name) || g.away.toLowerCase().includes(name)
-    ));
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.get('/proxy', async (req, res) => {
-  const p = req.query.path;
-  if (!p || !p.startsWith('/')) return res.status(400).json({ error: 'bad path' });
-  try { res.type('html').send(await get(p)); }
-  catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, '../public/index.html'));
-});
-
-app.listen(PORT, () => console.log(`🏒 HockeyRobban på port ${PORT} — ${KNOWN_GROUPS.length} serier i fallback`));
+<style>
+.spin {
+  width: 18px; height: 18px;
+  border: 2px solid var(--border2);
+  border-top-color: var(--accent2);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  display: inline-block;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</body>
+</html>
