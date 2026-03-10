@@ -327,10 +327,122 @@ function parseSchedule(html) {
   return games;
 }
 
-// Parsar spelarstatistik — /Statistics/Players/groupId
+// Parsar spelarstatistik — /Teams/Info/PlayersByTeam/groupId
+// Strukturen: tblContent-tabeller, en per lag, med tdTitle = lagnamn
+// tdSubTitle = "Playing statistics" eller "Goalkeeping statistics"
 function parsePlayerStats(html) {
   const $ = cheerio.load(html);
   const players = [];
+  const goalies = [];
+
+  $('table.tblContent').each((i, table) => {
+    const team = $(table).find('th.tdTitle').first().text().trim();
+    const subTitle = $(table).find('th.tdSubTitle').first().text().trim().toLowerCase();
+    const isGoalie = subTitle.includes('goal');
+
+    // Läs kolumnrubriker från header-raden
+    const headers = [];
+    $(table).find('th.tdHeader').each((j, th) => {
+      headers.push($(th).text().trim().replace('+/-','pm').replace('%','perc').toLowerCase());
+    });
+
+    $(table).find('tr').each((j, row) => {
+      const cells = $(row).find('td');
+      if (cells.length < 4) return;
+      const allTexts = [];
+      cells.each((k, c) => allTexts.push($(c).text().trim()));
+
+      // Första cellen ska vara ett rankingtal
+      if (isNaN(parseInt(allTexts[0]))) return;
+
+      const nameCell = $(cells[1]);
+      const name = nameCell.find('a').text().trim() || nameCell.text().trim();
+      if (!name) return;
+
+      const idx = (key) => headers.findIndex(h => h === key);
+      const n = (k, fb) => { const i = idx(k); return i >= 0 ? (parseInt(allTexts[i+1]) || 0) : fb; };
+      // +1 offset eftersom första col är rank och saknar th
+
+      if (isGoalie) {
+        goalies.push({
+          name, team,
+          gp:  parseInt(allTexts[2]) || 0,
+          gpi: parseInt(allTexts[3]) || 0,
+          gaa: parseFloat(allTexts[4]) || 0,
+          svs: parseInt(allTexts[5]) || 0,
+          svsperc: parseFloat(allTexts[6]) || 0,
+          so:  parseInt(allTexts[7]) || 0,
+          w:   parseInt(allTexts[8]) || 0,
+          l:   parseInt(allTexts[9]) || 0,
+          raw: allTexts,
+        });
+      } else {
+        players.push({
+          name, team,
+          gp:  parseInt(allTexts[2]) || 0,
+          g:   parseInt(allTexts[3]) || 0,
+          a:   parseInt(allTexts[4]) || 0,
+          tp:  parseInt(allTexts[5]) || 0,
+          pim: parseInt(allTexts[6]) || 0,
+          pm:  parseInt(allTexts[7]) || 0,
+          ppg: parseInt(allTexts[8]) || 0,
+          shg: parseInt(allTexts[9]) || 0,
+          gwg: parseInt(allTexts[10]) || 0,
+          raw: allTexts,
+        });
+      }
+    });
+  });
+
+  // Sortera poängligan
+  players.sort((a, b) => b.tp - a.tp || b.g - a.g);
+  goalies.sort((a, b) => b.gp - a.gp);
+  return { players, goalies };
+}
+
+// Parsar matchhändelser — /Game/Events/gameId
+function parseGameEvents(html) {
+  const $ = cheerio.load(html);
+  const events = [];
+
+  // Hämta matchinfo från header-tabellen
+  const headerText = $('table').first().text();
+  const scoreMatch = headerText.match(/(\d+)-(\d+)/);
+  const score = scoreMatch ? `${scoreMatch[1]}-${scoreMatch[2]}` : null;
+
+  // Parsa händelsetabellen — rader med tid + händelse
+  $('table tr').each((i, row) => {
+    const cells = $(row).find('td');
+    if (cells.length < 2) return;
+    const allTexts = [];
+    cells.each((k, c) => allTexts.push($(c).text().trim()));
+
+    // Tidsstämpel-pattern: MM:SS
+    const timeMatch = allTexts[0]?.match(/^(\d{1,2}):(\d{2})$/);
+    if (!timeMatch) return;
+
+    const time = allTexts[0];
+    const type = allTexts[1] || '';
+    const team = allTexts[2] || '';
+    const detail = allTexts[3] || '';
+
+    // Klassificera händelsetyp
+    let eventType = 'other';
+    if (type.match(/^\d+-\d+/)) eventType = 'goal';
+    else if (type.match(/\d+ min/i)) eventType = 'penalty';
+    else if (type.includes('GK')) eventType = 'goalie';
+    else if (type.includes('TO')) eventType = 'timeout';
+
+    events.push({ time, type, team, detail, eventType });
+  });
+
+  return { score, events };
+}
+
+// ── BORTTAGEN (ersatt av parsePlayerStats ovan) ──
+function _dead_code(html) {
+  const players = []; return players;
+  const $ = cheerio.load(html);
 
   // Läs kolumnrubriker
   const headers = [];
@@ -450,21 +562,22 @@ app.get('/api/schedule/:groupId', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Spelarstatistik för en serie
+// Spelarstatistik för en serie (skaters + goalies)
 app.get('/api/players/:groupId', async (req, res) => {
   try {
     const data = await cached(`players:${req.params.groupId}`, TTL5, async () =>
-      parsePlayerStats(await get(`/Statistics/Players/${req.params.groupId}`))
+      parsePlayerStats(await get(`/Teams/Info/PlayersByTeam/${req.params.groupId}`))
     );
     res.json(data);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Lagstatistik för en serie
-app.get('/api/teamstats/:groupId', async (req, res) => {
+// Matchhändelser + livedata — TTL 15 sek för live-support
+app.get('/api/game/:gameId', async (req, res) => {
   try {
-    const data = await cached(`teamstats:${req.params.groupId}`, TTL5, async () =>
-      parseTeamStats(await get(`/Statistics/Teams/${req.params.groupId}`))
+    const TTL_LIVE = 15;
+    const data = await cached(`game:${req.params.gameId}`, TTL_LIVE, async () =>
+      parseGameEvents(await get(`/Game/Events/${req.params.gameId}`))
     );
     res.json(data);
   } catch (e) { res.status(500).json({ error: e.message }); }
