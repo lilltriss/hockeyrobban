@@ -419,6 +419,8 @@ body {
 
 .team-tab:hover { color: var(--text); }
 .team-tab.active { color: var(--text); border-bottom-color: var(--accent2); }
+a.team-tab { text-decoration: none; color: var(--muted); font-size: 13px; }
+a.team-tab:hover { color: var(--text); }
 
 .content-area {
   max-width: 900px;
@@ -814,7 +816,6 @@ body {
       <div class="team-tab" onclick="showTeamTab('standings', this)">Tabell</div>
       <div class="team-tab" onclick="showTeamTab('schedule', this)">Schema</div>
       <div class="team-tab" onclick="showTeamTab('players', this)">Spelare</div>
-      <div class="team-tab" onclick="showTeamTab('teamstats', this)">Lagstatistik</div>
     </div>
   </div>
 
@@ -823,7 +824,7 @@ body {
     <div id="teamStandings" style="display:none"></div>
     <div id="teamSchedule" style="display:none"></div>
     <div id="teamPlayers" style="display:none"></div>
-    <div id="teamTeamStats" style="display:none"></div>
+
   </div>
 </div>
 
@@ -1269,12 +1270,14 @@ function renderFullSchedule(games, teamName) {
       `<span style="color:var(--muted);font-size:11px"> (${g.periods.map(p => isHome ? p.home+'-'+p.away : p.away+'-'+p.home).join(', ')})</span>` : '';
     const otTag = g.shootout ? ' <span style="color:var(--muted);font-size:11px">SO</span>' 
                 : g.overtime ? ' <span style="color:var(--muted);font-size:11px">OT</span>' : '';
-    return `<tr>
+    const clickable = g.played && g.gameId;
+    const rowClick = clickable ? `onclick="openGameModal('${g.gameId}','${g.home}','${g.away}')" style="cursor:pointer"` : '';
+    return `<tr ${rowClick}>
       <td>${g.date}</td>
       <td>${isHome ? '🏠' : '✈️'}</td>
       <td style="text-align:left">${opp}</td>
       <td class="${resClass}" style="font-weight:${g.played?'600':'400'}">${result}${otTag}${periods}</td>
-      <td style="color:var(--muted);font-size:12px">${g.played ? (g.venue || 'Spelad') : g.time || ''}</td>
+      <td style="color:var(--muted);font-size:12px">${clickable ? '🔍 ' : ''}${g.played ? (g.venue || 'Spelad') : g.time || ''}</td>
     </tr>`;
   }).join('');
 
@@ -1294,40 +1297,51 @@ async function loadTeamPlayers() {
   const el = document.getElementById('teamPlayers');
   loading(el);
   try {
-    const players = await apiFetch(`/api/players/${currentGroupId}`);
-    if (!players.length) { el.innerHTML = '<div style="padding:24px;color:var(--muted);text-align:center">Ingen spelarstatistik tillgänglig för denna serie</div>'; return; }
-    // Filtrera på lagets spelare om vi vet laget
+    const result = await apiFetch(`/api/players/${currentGroupId}`);
+    const players = Array.isArray(result) ? result : (result.players || []);
+    const goalies = Array.isArray(result) ? [] : (result.goalies || []);
+    if (!players.length && !goalies.length) {
+      el.innerHTML = '<div style="padding:24px;color:var(--muted);text-align:center">Ingen spelarstatistik tillgänglig</div>'; return;
+    }
     const myTeam = currentTeamData?.name?.toLowerCase().split(' ')[0];
-    const mine = myTeam ? players.filter(p => p.team.toLowerCase().includes(myTeam)) : [];
-    const allRows = players.map(p => {
+    const skaterRows = players.map((p,i) => {
       const isMe = myTeam && p.team.toLowerCase().includes(myTeam);
-      return `<tr class="${isMe ? 'my-team-row' : ''}">
-        <td>${p.pos}</td>
+      return `<tr class="${isMe?'my-team-row':''}">
+        <td>${i+1}</td>
         <td style="text-align:left;font-weight:${isMe?'600':'400'}">${p.name}</td>
         <td style="text-align:left;color:var(--muted);font-size:12px">${p.team}</td>
-        <td>${p.gp}</td>
-        <td style="color:var(--green)">${p.g}</td>
-        <td>${p.a}</td>
+        <td>${p.gp}</td><td style="color:var(--green)">${p.g}</td><td>${p.a}</td>
         <td class="pts-td" style="color:var(--accent2)">${p.tp}</td>
         <td style="color:var(--muted);font-size:12px">${p.pim}</td>
-        ${p.pm !== 0 ? `<td style="color:${p.pm>0?'var(--green)':'var(--red)'};font-size:12px">${p.pm>0?'+':''}${p.pm}</td>` : '<td style="color:var(--muted);font-size:12px">0</td>'}
+        <td style="color:${p.pm>0?'var(--green)':p.pm<0?'var(--red)':'var(--muted)'};font-size:12px">${p.pm>0?'+':''}${p.pm}</td>
         <td style="color:var(--muted);font-size:12px">${p.ppg||0}</td>
       </tr>`;
     }).join('');
-
+    const goalieRows = goalies.map(g => {
+      const isMe = myTeam && g.team.toLowerCase().includes(myTeam);
+      const pct = g.svsperc ? (g.svsperc < 1 ? (g.svsperc*100).toFixed(1) : g.svsperc.toFixed(1))+'%' : '-';
+      return `<tr class="${isMe?'my-team-row':''}">
+        <td style="text-align:left;font-weight:${isMe?'600':'400'}">${g.name}</td>
+        <td style="text-align:left;color:var(--muted);font-size:12px">${g.team}</td>
+        <td>${g.gp}</td><td>${g.gpi||0}</td>
+        <td style="color:var(--accent2)">${g.gaa||0}</td>
+        <td>${g.svs||0}</td><td style="color:var(--green)">${pct}</td>
+        <td>${g.so||0}</td><td>${g.w||0}</td><td>${g.l||0}</td>
+      </tr>`;
+    }).join('');
     el.innerHTML = `<div class="fade-in">
-      ${mine.length ? `<div class="section-label" style="margin-bottom:8px">Markerat: ${currentTeamData.name}s spelare</div>` : ''}
-      <div class="table-wrap"><table class="standings-tbl">
-        <thead><tr>
-          <th>#</th><th style="text-align:left">Spelare</th><th style="text-align:left">Lag</th>
-          <th title="Matcher">M</th><th title="Mål">G</th><th title="Assists">A</th>
-          <th title="Totalpoäng">TP</th><th title="Utvisningsminuter">PIM</th>
-          <th title="Plus/Minus">+/-</th><th title="Powerplay-mål">PP</th>
-        </tr></thead>
-        <tbody>${allRows}</tbody>
-      </table></div>
+      ${players.length ? `<div class="section-label" style="margin-bottom:8px">Skaters${myTeam?' — lagets spelare markerade':''}</div>
+      <div class="table-wrap"><table class="standings-tbl"><thead><tr>
+        <th>#</th><th style="text-align:left">Spelare</th><th style="text-align:left">Lag</th>
+        <th>M</th><th>G</th><th>A</th><th>TP</th><th>PIM</th><th>+/-</th><th>PP</th>
+      </tr></thead><tbody>${skaterRows}</tbody></table></div>` : ''}
+      ${goalies.length ? `<div class="section-label" style="margin:16px 0 8px">Målvakter</div>
+      <div class="table-wrap"><table class="standings-tbl"><thead><tr>
+        <th style="text-align:left">Målvakt</th><th style="text-align:left">Lag</th>
+        <th>M</th><th>GPI</th><th>GAA</th><th>SVS</th><th>SVS%</th><th>SO</th><th>V</th><th>F</th>
+      </tr></thead><tbody>${goalieRows}</tbody></table></div>` : ''}
     </div>`;
-  } catch (e) {
+  } catch(e) {
     el.innerHTML = '<div style="padding:24px;color:var(--muted);text-align:center">Spelarstatistik ej tillgänglig</div>';
   }
 }
@@ -1377,15 +1391,16 @@ async function loadTeamTeamStats() {
 function showTeamTab(name, el) {
   document.querySelectorAll('.team-tab').forEach(t => t.classList.remove('active'));
   if (el) el.classList.add('active');
-  ['teamOverview','teamStandings','teamSchedule','teamPlayers','teamTeamStats'].forEach(id => document.getElementById(id).style.display = 'none');
-  const map = { overview:'teamOverview', standings:'teamStandings', schedule:'teamSchedule', players:'teamPlayers', teamstats:'teamTeamStats' };
-  document.getElementById(map[name]).style.display = 'block';
+  ['teamOverview','teamStandings','teamSchedule','teamPlayers'].forEach(id => {
+    const e = document.getElementById(id); if (e) e.style.display = 'none';
+  });
+  const map = { overview:'teamOverview', standings:'teamStandings', schedule:'teamSchedule', players:'teamPlayers' };
+  if (map[name]) document.getElementById(map[name]).style.display = 'block';
 
-  // Lazy-load tabeller
+  // Lazy-load
   if (name === 'standings' && currentGroupId) loadTeamStandings();
-  if (name === 'players' && currentGroupId) loadTeamPlayers();
-  if (name === 'teamstats' && currentGroupId) loadTeamTeamStats();
   if (name === 'schedule'  && currentGroupId) loadTeamSchedule();
+  if (name === 'players'   && currentGroupId) loadTeamPlayers();
 }
 
 // ══════════════════════════════════════════════════════════
@@ -1451,5 +1466,76 @@ function goBack() { showPage('hero'); }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 </style>
+
+<!-- ── Game Events Modal ─────────────────────────────────── -->
+<div id="gameModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:1000;overflow-y:auto;padding:20px">
+  <div style="max-width:600px;margin:0 auto;background:var(--card);border-radius:12px;overflow:hidden">
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:16px 20px;border-bottom:1px solid var(--border)">
+      <div>
+        <div id="gameModalTitle" style="font-weight:700;font-size:16px"></div>
+        <div id="gameModalSub" style="color:var(--muted);font-size:13px;margin-top:2px"></div>
+      </div>
+      <button onclick="closeGameModal()" style="background:none;border:none;color:var(--muted);font-size:24px;cursor:pointer;padding:4px">✕</button>
+    </div>
+    <div id="gameModalBody" style="padding:16px"></div>
+  </div>
+</div>
+
+<script>
+async function openGameModal(gameId, home, away) {
+  const modal = document.getElementById('gameModal');
+  const title = document.getElementById('gameModalTitle');
+  const sub = document.getElementById('gameModalSub');
+  const body = document.getElementById('gameModalBody');
+  title.textContent = `${home} vs ${away}`;
+  sub.textContent = 'Laddar händelser...';
+  body.innerHTML = '<div style="text-align:center;padding:32px;color:var(--muted)">⏳</div>';
+  modal.style.display = 'block';
+  document.body.style.overflow = 'hidden';
+  try {
+    const data = await apiFetch(`/api/game/${gameId}`);
+    sub.textContent = data.score || '';
+    if (!data.events || !data.events.length) {
+      body.innerHTML = '<div style="padding:24px;text-align:center;color:var(--muted)">Inga händelser hittades</div>';
+      return;
+    }
+    const icons = { goal:'⚽', penalty:'🟥', goalie:'🧤', timeout:'⏱', other:'•' };
+    const colors = { goal:'var(--green)', penalty:'var(--red)', goalie:'var(--accent)', timeout:'var(--accent2)', other:'var(--muted)' };
+    let html = '';
+    let period = '';
+    for (const ev of [...data.events].reverse()) {
+      // Periodrubriker
+      if (ev.type.includes('period') || ev.type.includes('period')) {
+        // handled below
+      }
+      const isPeriodHeader = ev.type.match(/period|halvlek/i) && !ev.time.includes(':');
+      if (isPeriodHeader) {
+        html += `<div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;padding:12px 0 4px;border-top:1px solid var(--border);margin-top:8px">${ev.type}</div>`;
+        continue;
+      }
+      const icon = icons[ev.eventType] || '•';
+      const color = colors[ev.eventType] || 'var(--text)';
+      html += `<div style="display:flex;gap:12px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.04);align-items:flex-start">
+        <span style="color:var(--muted);font-size:12px;min-width:40px;padding-top:2px">${ev.time}</span>
+        <span style="min-width:20px">${icon}</span>
+        <div style="flex:1">
+          <span style="color:${color};font-weight:${ev.eventType==='goal'?'700':'400'}">${ev.type}</span>
+          ${ev.team ? `<span style="color:var(--muted);font-size:12px;margin-left:6px">${ev.team}</span>` : ''}
+          ${ev.detail ? `<div style="color:var(--muted);font-size:12px;margin-top:2px">${ev.detail}</div>` : ''}
+        </div>
+      </div>`;
+    }
+    body.innerHTML = html || '<div style="padding:24px;text-align:center;color:var(--muted)">Inga händelser</div>';
+  } catch(e) {
+    body.innerHTML = `<div style="padding:24px;text-align:center;color:var(--red)">Kunde inte hämta matchdata</div>`;
+  }
+}
+function closeGameModal() {
+  document.getElementById('gameModal').style.display = 'none';
+  document.body.style.overflow = '';
+}
+// Stäng med Escape
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeGameModal(); });
+</script>
 </body>
 </html>
